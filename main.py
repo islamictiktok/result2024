@@ -214,4 +214,13 @@ def build_and_save_dynamic_csv(rows, out_path):
 # ============================
 # الحلقة الرئيسية
 # ============================
-start_from = read_checkpoint() or START_SE
+start_from = read_checkpoint() or START_SEAT
+print("Starting from seat:", start_from)
+
+session = new_session()
+token = None
+try:
+    token = get_token(session)
+except Exception as e:
+    print("Warning: could not fetch verification token:", e)
+
