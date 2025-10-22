@@ -1,11 +1,3 @@
-# -*- coding: utf-8 -*-
-# كود كامل لاستخراج النتائج مباشرة من السورس HTML (مواد متغيرة) مع آلية الجلب والكابتشا والحفظ الدوري
-# يعمل في Google Colab أو أي بيئة بايثون عادية
-
-!apt-get update -y
-!apt-get install -y tesseract-ocr libtesseract-dev -qq
-!pip install --quiet pytesseract opencv-python-headless numpy beautifulsoup4 pandas
-
 import requests, time, io, os, random, datetime, traceback, re, json, csv
 from bs4 import BeautifulSoup
 from PIL import Image
