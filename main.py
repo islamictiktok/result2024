@@ -2,7 +2,6 @@ import requests, time, io, os, random, datetime, traceback, re, json, csv
 from bs4 import BeautifulSoup
 from PIL import Image
 import pandas as pd
-from google.colab import files
 import pytesseract
 import numpy as np
 import cv2
@@ -129,19 +128,16 @@ def solve_captcha_advanced(img_bytes, display_image=False):
     return digits.strip()
 
 # ============================
-# توحيد أسماء المواد (تنظيف وتصحيحات بسيطة)
+# توحيد أسماء المواد
 # ============================
 def normalize_subject(name: str) -> str:
     s = re.sub(r"\s+", " ", name).strip()
-    # تصحيحات شائعة حسب البيانات
     s = s.replace("الأحياء", "الاحياء")
     s = s.replace("الادب الانجليزى", "الأدب الإنجليزي")
-    # لو عايز تصحح "الرياضيات المنخصصة" إلى صيغة أخرى، فعّل السطر التالي:
-    # s = s.replace("الرياضيات المنخصصة", "الرياضيات المتخصصة")
     return s
 
 # ============================
-# دالة الاستخراج من HTML الناتج مباشرة (مواد متغيرة)
+# دالة الاستخراج من HTML
 # ============================
 def parse_from_given_html(html_text):
     soup = BeautifulSoup(html_text, "html.parser")
@@ -152,7 +148,6 @@ def parse_from_given_html(html_text):
     subjects = {}
 
     tables = soup.find_all("table")
-    # الجدول الأول: بيانات عامة
     if tables:
         first_table = tables[0]
         for tr in first_table.find_all("tr"):
@@ -169,7 +164,6 @@ def parse_from_given_html(html_text):
                 elif "نسبة" in key:
                     percent = val
 
-    # المواد: من الجداول التالية فقط، نقبل أي مادة بدرجة رقمية 0..100
     non_subject_keys = {"اسم الطالب", "رقم الجلوس", "النتيجة", "النسبة"}
     for t in tables[1:]:
         for tr in t.find_all("tr"):
@@ -178,17 +172,13 @@ def parse_from_given_html(html_text):
                 subj_raw = cols[0].get_text(strip=True)
                 score = cols[1].get_text(strip=True)
                 subj = normalize_subject(subj_raw)
-
                 if not subj or subj in non_subject_keys:
                     continue
-
-                # درجة رقمية فقط 0..100
                 if re.fullmatch(r'\d{1,3}', score):
                     iv = int(score)
                     if 0 <= iv <= 100:
                         subjects[subj] = score
 
-    # __raw: نص مختصر ومُنظف من الفوتر (اختياري)
     raw_text = soup.get_text(" ", strip=True)
     raw_text = re.sub(r"جميع الحقوق محفوظة.*$", "", raw_text).strip()
     raw_json = json.dumps(raw_text[:2000], ensure_ascii=False)
@@ -200,21 +190,19 @@ def parse_from_given_html(html_text):
         "النسبة": percent,
         "__raw": raw_json
     }
-    # إضافة المواد كأعمدة بأسمائها المتغيرة
     for subj, score in subjects.items():
         row[subj] = score
 
     return row
 
 # ============================
-# بناء DataFrame ديناميكي وحفظ CSV
+# بناء DataFrame وحفظ CSV
 # ============================
 def build_and_save_dynamic_csv(rows, out_path):
     df = pd.DataFrame(rows)
     base_cols = ["رقم الجلوس","اسم الطالب","النسبة","النتيجة"]
     extra_cols = [c for c in df.columns if c not in base_cols + ["__raw","error"]]
     final_cols = base_cols + sorted(extra_cols) + ["__raw","error"] if "error" in df.columns else base_cols + sorted(extra_cols) + ["__raw"]
-    # تأكد من وجود الأعمدة حتى لو فاضية
     for col in final_cols:
         if col not in df.columns:
             df[col] = ""
@@ -224,108 +212,6 @@ def build_and_save_dynamic_csv(rows, out_path):
     return df
 
 # ============================
-# الحلقة الرئيسية: جلب، تحليل HTML، حفظ دوري
+# الحلقة الرئيسية
 # ============================
-start_from = read_checkpoint() or START_SEAT
-print("Starting from seat:", start_from)
-
-session = new_session()
-token = None
-try:
-    token = get_token(session)
-except Exception as e:
-    print("Warning: could not fetch verification token:", e)
-
-# حل كابتشا مبدئي
-try:
-    img = download_captcha_bytes(session)
-    captcha_solution = solve_captcha_advanced(img, display_image=False)
-    print("Captcha solved:", captcha_solution)
-except Exception as e:
-    captcha_solution = ""
-    print("Captcha step skipped/failed:", e)
-
-all_rows = []
-saved_total = 0
-request_count_in_session = 0
-consecutive_server_errors = 0
-
-seat = start_from
-while seat <= END_SEAT:
-    try:
-        # تحديث توكن دوري
-        try:
-            new_token = get_token(session)
-            if new_token:
-                token = new_token
-        except Exception:
-            pass
-
-        resp = safe_post_with_retries(session, seat, token, captcha_solution)
-        status = resp.status_code
-        text = resp.text
-
-        if status == 200:
-            parsed = parse_from_given_html(text)
-            if not parsed.get("رقم الجلوس"):
-                parsed["رقم الجلوس"] = str(seat)
-            all_rows.append(parsed)
-            print(f"OK {seat} -> {parsed.get('اسم الطالب','-')} | {parsed.get('النسبة','-')}")
-            consecutive_server_errors = 0
-            write_checkpoint(seat + 1)
-        else:
-            log_raw(seat, status, text)
-            all_rows.append({"رقم الجلوس": str(seat), "اسم الطالب":"", "النسبة":"", "__raw": json.dumps(text[:1000], ensure_ascii=False), "error": f"status_{status}"})
-            write_checkpoint(seat + 1)
-
-    except Exception as e:
-        print(f"ERR {seat} -> {e}")
-        log_raw(seat, "exception", traceback.format_exc())
-        all_rows.append({"رقم الجلوس": str(seat), "اسم الطالب":"", "النسبة":"", "__raw": json.dumps(str(e), ensure_ascii=False), "error": str(e)})
-        consecutive_server_errors += 1
-
-    # حفظ دوري ديناميكي بالأعمدة المتغيرة
-    if len(all_rows) >= BATCH_SAVE:
-        existing_df = safe_read_existing_csv(OUT_CSV)
-        old_rows = existing_df.to_dict(orient='records') if existing_df is not None else []
-        merged_rows = old_rows + all_rows
-        final_df = build_and_save_dynamic_csv(merged_rows, OUT_CSV)
-        saved_total = len(merged_rows)
-        print(f"Saved {saved_total} rows to {OUT_CSV} (full rewrite)")
-        all_rows = []
-
-    request_count_in_session += 1
-
-    # تحديث سيشن وكابتشا دوريًا
-    if consecutive_server_errors >= RESOLVE_NEW_CAPTCHA_AFTER_CONSECUTIVE_SERVER_ERRORS or request_count_in_session >= REFRESH_SESSION_AFTER:
-        print("Refreshing session and solving new captcha...")
-        try:
-            session = new_session()
-            token = get_token(session)
-            img = download_captcha_bytes(session)
-            captcha_solution = solve_captcha_advanced(img, display_image=False)
-            print("New captcha solved:", captcha_solution)
-        except Exception as e:
-            print("Session refresh failed:", e)
-        consecutive_server_errors = 0
-        request_count_in_session = 0
-
-    seat += 1
-    if DELAY_BETWEEN:
-        time.sleep(DELAY_BETWEEN)
-
-# حفظ المتبقي وإعادة كتابة الملف الكامل بأعمدة ديناميكية ثابتة
-if all_rows:
-    existing_df = safe_read_existing_csv(OUT_CSV)
-    old_rows = existing_df.to_dict(orient='records') if existing_df is not None else []
-    merged_rows = old_rows + all_rows
-    final_df = build_and_save_dynamic_csv(merged_rows, OUT_CSV)
-    saved_total = len(merged_rows)
-
-print("✅ Finished. Total rows saved:", saved_total)
-
-# تنزيل الملف في Colab
-try:
-    files.download(OUT_CSV)
-except Exception:
-    print(f"CSV written to {OUT_CSV}. Download not available in this environment.")
+start_from = read_checkpoint() or START_SE
